@@ -305,7 +305,9 @@ void CommPG::ucx_disconnect_eps(
   if ((size_t)oob->store->add(oob->getKey("epclosed"), 1) == eps.size()) {
     oob->store->add(oob->getKey("epfinished"), 1);
   } else {
-    oob->store->wait({oob->getKey("epfinished")});
+    while (!oob->store->check({oob->getKey("epfinished")})) {
+      ucp_worker_progress(ucx_comm.worker);
+    }
   }
 }
 
@@ -427,6 +429,7 @@ c10::intrusive_ptr<ProcessGroup::Work> CommPG::enqueue_p2p(
   }
   auto entry = std::make_shared<ProcessGroupUCC::ProgressEntry>(
       &ucx_comm, request);
+  work->entry_ = entry;
   std::unique_lock<std::mutex> lock(mutex);
   progress_queue.push_back(entry);
   lock.unlock();
