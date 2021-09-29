@@ -527,7 +527,8 @@ void CommPG::progress_loop() {
     std::exception_ptr eptr;
     try {
       while (work->request_->status > 0) {
-        work->comm_->progress();
+        ucx_comm.progress();
+        ucc_comm.progress();
       }
       if (work->request_->status < 0) {
         eptr = std::make_exception_ptr(
