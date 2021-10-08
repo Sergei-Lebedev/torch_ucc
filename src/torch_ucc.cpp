@@ -675,6 +675,12 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupUCC::allgather(
     std::vector<std::vector<at::Tensor>>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
     const AllgatherOptions& /* unused */) {
+  if (size_ == 1) {
+      outputTensors[0][0].copy_(inputTensors[0]);
+      return c10::make_intrusive<ProcessGroupUCC::WorkUCCsingle>(
+                OpType::ALLGATHER,
+                torch_ucc_config.enable_profiling ? "ucc:allgather" : nullptr);
+  }
   auto& tensor = inputTensors[0];
   check_device(tensor.device(), outputTensors[0][0].device());
   initComm(tensor.device());
@@ -721,6 +727,11 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupUCC::_allgather_base(
 c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupUCC::allreduce(
     std::vector<at::Tensor>& tensors,
     const AllreduceOptions& opts) {
+  if (size_ == 1) {
+      return c10::make_intrusive<ProcessGroupUCC::WorkUCCsingle>(
+                OpType::ALLREDUCE,
+                torch_ucc_config.enable_profiling ? "ucc:allreduce" : nullptr);
+  }
   check_tensor(tensors);
   auto& tensor = tensors[0];
   initComm(tensor.device());
@@ -770,6 +781,12 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupUCC::alltoall_base(
     std::vector<int64_t>& outputSplitSizes,
     std::vector<int64_t>& inputSplitSizes,
     const AllToAllOptions& /* unused */) {
+  if (size_ == 1) {
+      outputTensor.copy_(inputTensor);
+      return c10::make_intrusive<ProcessGroupUCC::WorkUCCsingle>(
+                OpType::ALLTOALL_BASE,
+                torch_ucc_config.enable_profiling ? "ucc:alltoall" : nullptr);
+  }
   check_device(inputTensor.device(), outputTensor.device());
   initComm(inputTensor.device());
   ucc_coll_args_t coll;
@@ -836,6 +853,11 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupUCC::alltoall_base(
 
 c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupUCC::barrier(
     const BarrierOptions& /* unused */) {
+  if (size_ == 1) {
+      return c10::make_intrusive<ProcessGroupUCC::WorkUCCsingle>(
+                OpType::BARRIER,
+                torch_ucc_config.enable_profiling ? "ucc:barrier" : nullptr);
+  }
   initComm(c10::DeviceType::CPU);
 
   ucc_coll_args_t coll;
@@ -850,6 +872,11 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupUCC::barrier(
 c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupUCC::broadcast(
     std::vector<at::Tensor>& tensors,
     const BroadcastOptions& opts) {
+  if (size_ == 1) {
+      return c10::make_intrusive<ProcessGroupUCC::WorkUCCsingle>(
+                OpType::BROADCAST,
+                torch_ucc_config.enable_profiling ? "ucc:broadcast" : nullptr);
+  }
   check_tensor(tensors);
   auto& tensor = tensors[0];
   initComm(tensor.device());
