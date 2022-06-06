@@ -129,6 +129,7 @@ std::map<std::string, std::string> torch_ucc_envs_map = {
     {"TORCH_UCC_ENABLE_COMMS_LOGGER", "0"},
     {"TORCH_UCC_REDUCE_SCATTER_BLOCKING_WAIT", "1"},
     {"TORCH_UCC_SCATTER_BLOCKING_WAIT", "1"},
+    {"TORCH_UCC_P2P_BLOCKING_WAIT", "1"},
     {"TORCH_UCC_USE_FUTURE", "1"},
     {"TORCH_UCC_PROFILING_ENABLE", "0"},
     {"TORCH_UCC_TLS", "nccl,ucp"},
@@ -173,6 +174,11 @@ void read_confg() {
       std::stoi(torch_ucc_envs_map.at("TORCH_UCC_SCATTER_BLOCKING_WAIT"));
   torch_ucc_config.blocking_wait[(std::uint8_t)OpType::GATHER] =
       std::stoi(torch_ucc_envs_map.at("TORCH_UCC_GATHER_BLOCKING_WAIT"));
+  torch_ucc_config.blocking_wait[(std::uint8_t)OpType::SEND] =
+      std::stoi(torch_ucc_envs_map.at("TORCH_UCC_P2P_BLOCKING_WAIT"));
+  torch_ucc_config.blocking_wait[(std::uint8_t)OpType::RECV] =
+      torch_ucc_config.blocking_wait[(std::uint8_t)OpType::SEND];
+
   torch_ucc_config.use_future =
       std::stoi(torch_ucc_envs_map.at("TORCH_UCC_USE_FUTURE"));
   torch_ucc_config.enable_profiling =
@@ -1716,87 +1722,76 @@ c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupUCC::send(
   check_tensor(tensors);
   auto& tensor = tensors[0];
   initComm(tensor.device());
+  WorkData* data = new WorkData();
 
-  ucp_tag_t ucp_tag;
-  TORCH_UCX_MAKE_SEND_TAG(ucp_tag, tag, rank_, comm_id);
-  ucc_coll_req_h request = comm->send_nb(
-      eps[dstRank],
-      tensor.data_ptr(),
-      to_ucs_memType(tensor.device().type()),
-      tensor.numel() * tensor.element_size(),
-      ucp_tag);
+  ucc_coll_args_t coll;
 
-  auto work = comm->enqueue_p2p(OpType::SEND, request, "ucc:send");
-  // TODO: record src, dst ranks and tag
-  RECORD_COMMS_TRACE(
-      logger->trace_generator,
-      work,
+  coll.mask = UCC_COLL_ARGS_FIELD_ACTIVE_SET;
+  coll.coll_type = UCC_COLL_TYPE_BCAST;
+  coll.src.info.buffer = tensor.data_ptr();
+  coll.src.info.count = tensor.numel();
+  coll.src.info.datatype = to_ucc_dType(tensor);
+  coll.src.info.mem_type = to_ucc_memType(tensor.device().type());
+  coll.root = getRank();
+
+  coll.active_set.size = 2;
+  coll.active_set.start = getRank();
+  coll.active_set.stride = dstRank - getRank();
+
+  return collective_post(
       OpType::SEND,
-      this->getRank(),
-      this->getSize(),
+      []() {},
+      []() {},
+      coll,
+      std::unique_ptr<WorkData>(data),
+      tensor.device(),
       tensors,
-      tensors);
-  return work;
+      tensors,
+      "ucc:send");
 }
 
 c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupUCC::recv(
     std::vector<at::Tensor>& tensors,
     int srcRank,
     int tag) {
+
   check_tensor(tensors);
   auto& tensor = tensors[0];
   initComm(tensor.device());
+  WorkData* data = new WorkData();
 
-  ucp_tag_t ucp_tag, ucp_tag_mask;
-  TORCH_UCX_MAKE_RECV_TAG(ucp_tag, ucp_tag_mask, tag, srcRank, comm_id);
-  ucc_coll_req_h request = comm->recv_nb(
-      tensor.data_ptr(),
-      to_ucs_memType(tensor.device().type()),
-      tensor.numel() * tensor.element_size(),
-      ucp_tag,
-      ucp_tag_mask);
+  ucc_coll_args_t coll;
 
-  auto work = comm->enqueue_p2p(OpType::RECV, request, "ucc:recv");
-  // TODO: record src, dst ranks and tag
-  RECORD_COMMS_TRACE(
-      logger->trace_generator,
-      work,
+  coll.mask = UCC_COLL_ARGS_FIELD_ACTIVE_SET;
+  coll.coll_type = UCC_COLL_TYPE_BCAST;
+  coll.src.info.buffer = tensor.data_ptr();
+  coll.src.info.count = tensor.numel();
+  coll.src.info.datatype = to_ucc_dType(tensor);
+  coll.src.info.mem_type = to_ucc_memType(tensor.device().type());
+  coll.root = srcRank;
+
+  coll.active_set.size = 2;
+  coll.active_set.start = getRank();
+  coll.active_set.stride = srcRank - getRank();
+
+  return collective_post(
       OpType::RECV,
-      this->getRank(),
-      this->getSize(),
+      []() {},
+      []() {},
+      coll,
+      std::unique_ptr<WorkData>(data),
+      tensor.device(),
       tensors,
-      tensors);
-  return work;
+      tensors,
+      "ucc:recv");
 }
 
 c10::intrusive_ptr<ProcessGroup::Work> ProcessGroupUCC::recvAnysource(
     std::vector<at::Tensor>& tensors,
     int tag) {
-  check_tensor(tensors);
-  auto& tensor = tensors[0];
-  initComm(tensor.device());
-
-  ucp_tag_t ucp_tag, ucp_tag_mask;
-  TORCH_UCX_MAKE_RECV_TAG(
-      ucp_tag, ucp_tag_mask, tag, TORCH_UCX_ANY_SOURCE, comm_id);
-  ucc_coll_req_h request = comm->recv_nb(
-      tensor.data_ptr(),
-      to_ucs_memType(tensor.device().type()),
-      tensor.numel() * tensor.element_size(),
-      ucp_tag,
-      ucp_tag_mask);
-
-  auto work = comm->enqueue_p2p(OpType::RECVANYSOURCE, request, "ucc:recv");
-  // TODO: record dst rank and tag
-  RECORD_COMMS_TRACE(
-      logger->trace_generator,
-      work,
-      OpType::RECVANYSOURCE,
-      this->getRank(),
-      this->getSize(),
-      tensors,
-      tensors);
-  return work;
+  TORCH_UCC_LOG_ERROR(TORCH_UCC_COLL_POST,
+                      "recvAnysource is not supported by PG-UCC");
+  throw std::runtime_error(ucc_status_string(UCC_ERR_NOT_SUPPORTED));
 }
 
 c10::intrusive_ptr<ProcessGroup> ProcessGroupUCC::createProcessGroupUCC(
